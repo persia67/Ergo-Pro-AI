@@ -1,0 +1,7 @@
+{
+  "name": "ErgoPro AI - Advanced Ergonomic Assessment Suite",
+  "description": "A comprehensive ergonomic assessment tool using REBA, RULA, OWAS, and NIOSH methods with AI-powered posture analysis.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
