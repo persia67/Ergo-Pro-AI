@@ -1,5 +1,6 @@
 
 export type MethodType = 'REBA' | 'RULA' | 'OWAS' | 'NIOSH';
+export type Language = 'en' | 'fa';
 
 export interface Correction {
   title: string;
@@ -47,4 +48,11 @@ export interface NioshData {
   frequency: number;
   duration: number;
   coupling: 'good' | 'fair' | 'poor';
+}
+
+export interface TranslationSet {
+  [key: string]: {
+    en: string;
+    fa: string;
+  };
 }
