@@ -1,6 +1,24 @@
 
 export type MethodType = 'REBA' | 'RULA' | 'OWAS' | 'NIOSH';
 export type Language = 'en' | 'fa';
+export type Theme = 'dark' | 'light';
+
+export interface AssessmentMetadata {
+  jobTitle: string;
+  assessor: string;
+  evalee: string;
+  date: string;
+}
+
+export interface AssessmentSession {
+  id: string;
+  timestamp: number;
+  method: MethodType;
+  metadata: AssessmentMetadata;
+  formData: any;
+  results: any;
+  image: string | null;
+}
 
 export interface Correction {
   title: string;
@@ -48,11 +66,4 @@ export interface NioshData {
   frequency: number;
   duration: number;
   coupling: 'good' | 'fair' | 'poor';
-}
-
-export interface TranslationSet {
-  [key: string]: {
-    en: string;
-    fa: string;
-  };
 }

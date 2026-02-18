@@ -1,6 +1,22 @@
 
 import { RebaData, RulaData, OwasData, NioshData, Language } from './types';
 
+/**
+ * Basic native conversion to Shamsi date string
+ */
+export function getTodayShamsi(): string {
+  try {
+    return new Intl.DateTimeFormat('fa-IR', {
+      calendar: 'persian',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date());
+  } catch (e) {
+    return new Date().toISOString().split('T')[0];
+  }
+}
+
 // REBA Tables
 const REBA_TABLE_A = [
   [[1,2,3,4],[2,3,4,5],[2,4,5,6],[3,5,6,7],[4,6,7,8]],

@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   calculateREBA, 
   calculateRULA, 
@@ -9,9 +9,10 @@ import {
   METHOD_METADATA, 
   REBA_FIELDS, 
   RULA_FIELDS, 
-  OWAS_FIELDS 
+  OWAS_FIELDS,
+  getTodayShamsi
 } from './constants';
-import { MethodType, Correction, Language } from './types';
+import { MethodType, Correction, Language, Theme, AssessmentMetadata, AssessmentSession } from './types';
 import { analyzePostureFromImage } from './geminiService';
 
 // --- Sub-components ---
@@ -30,8 +31,8 @@ const SliderField: React.FC<{
   return (
     <div className="mb-8">
       <div className="flex justify-between items-center mb-2">
-        <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{label}</label>
-        <span className="bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded text-sm font-bold border border-blue-500/30">{value}</span>
+        <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{label}</label>
+        <span className="bg-blue-500/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded text-sm font-bold border border-blue-500/30">{value}</span>
       </div>
       <input 
         type="range" 
@@ -40,18 +41,18 @@ const SliderField: React.FC<{
         step={1} 
         value={value} 
         onChange={(e) => onChange(fieldKey, parseInt(e.target.value))}
-        className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+        className="w-full h-1.5 bg-slate-300 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500 transition-all"
       />
       <div className="flex justify-between mt-2">
         {descriptions.map((desc: string, i: number) => (
-          <div key={i} className="text-[9px] text-slate-500 leading-tight text-center px-1" style={{ width: `${100/descriptions.length}%` }}>
-            <span className={value === (field.min + i) ? "text-blue-400 font-bold" : ""}>
+          <div key={i} className="text-[9px] text-slate-500 dark:text-slate-500 leading-tight text-center px-1" style={{ width: `${100/descriptions.length}%` }}>
+            <span className={value === (field.min + i) ? "text-blue-600 dark:text-blue-400 font-bold" : ""}>
               {desc}
             </span>
           </div>
         ))}
       </div>
-      <p className="text-[10px] text-slate-600 mt-2 italic">{help}</p>
+      <p className="text-[10px] text-slate-400 dark:text-slate-600 mt-2 italic">{help}</p>
     </div>
   );
 };
@@ -65,20 +66,50 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiObservations, setAiObservations] = useState<string>("");
   const [lang, setLang] = useState<Language>('fa');
+  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('ergo_theme') as Theme) || 'dark');
+  const [statusMessage, setStatusMessage] = useState<{ text: string, type: 'success' | 'error' | 'info' } | null>(null);
+  
+  // Metadata Persistence
+  const [metadata, setMetadata] = useState<AssessmentMetadata>(() => {
+    const lastAssessor = localStorage.getItem('ergo_last_assessor') || '';
+    return {
+      jobTitle: '',
+      assessor: lastAssessor,
+      evalee: '',
+      date: getTodayShamsi()
+    };
+  });
+  
+  const [savedAssessments, setSavedAssessments] = useState<AssessmentSession[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('ergo_history') || '[]');
+    } catch { return []; }
+  });
 
-  // Sync document direction with language
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Sync document state and styles
   useEffect(() => {
     document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr';
     document.documentElement.lang = lang;
-  }, [lang]);
+    if (theme === 'dark') {
+      document.body.classList.add('dark');
+    } else {
+      document.body.classList.remove('dark');
+    }
+    localStorage.setItem('ergo_theme', theme);
+  }, [lang, theme]);
+
+  // Status message auto-dismiss
+  useEffect(() => {
+    if (statusMessage) {
+      const timer = setTimeout(() => setStatusMessage(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [statusMessage]);
 
   const results = useMemo(() => {
     if (Object.keys(formData).length === 0) return null;
-    if (method === 'REBA' && !('neck' in formData)) return null;
-    if (method === 'RULA' && !('upperArm' in formData)) return null;
-    if (method === 'OWAS' && !('back' in formData)) return null;
-    if (method === 'NIOSH' && !('weight' in formData)) return null;
-
     if (method === 'REBA') return calculateREBA(formData, lang);
     if (method === 'RULA') return calculateRULA(formData, lang);
     if (method === 'OWAS') return calculateOWAS(formData, lang);
@@ -104,8 +135,6 @@ export default function App() {
       initData.vDist = 75;
       initData.vOrigin = 75;
       initData.asymmetry = 0;
-      initData.frequency = 1;
-      initData.duration = 1;
       initData.coupling = 'good';
     }
     setFormData(initData);
@@ -113,6 +142,13 @@ export default function App() {
 
   const handleValueChange = (key: string, val: any) => {
     setFormData((prev: any) => ({ ...prev, [key]: val }));
+  };
+
+  const handleMetadataChange = (key: keyof AssessmentMetadata, val: string) => {
+    setMetadata(prev => ({ ...prev, [key]: val }));
+    if (key === 'assessor') {
+      localStorage.setItem('ergo_last_assessor', val);
+    }
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -123,24 +159,29 @@ export default function App() {
         const base64 = (reader.result as string).split(',')[1];
         setImage(reader.result as string);
         setIsAnalyzing(true);
-        const analysis = await analyzePostureFromImage(base64, method);
-        if (analysis) {
-          const params = analysis.estimatedParameters;
-          setAiObservations(analysis.observations || "");
-          setFormData((prev: any) => {
-            const next = { ...prev };
-            Object.keys(params).forEach(key => {
-              if (key in next) {
-                const fields = method === 'REBA' ? REBA_FIELDS : method === 'RULA' ? RULA_FIELDS : method === 'OWAS' ? OWAS_FIELDS : null;
-                if (fields && (fields as any)[key]) {
-                   next[key] = Math.max((fields as any)[key].min, Math.min((fields as any)[key].max, params[key]));
-                } else if (method === 'NIOSH') {
-                   next[key] = params[key];
+        setStatusMessage({ text: lang === 'fa' ? 'در حال تحلیل تصویر...' : 'Analyzing image...', type: 'info' });
+        
+        try {
+          const analysis = await analyzePostureFromImage(base64, method);
+          if (analysis) {
+            const params = analysis.estimatedParameters;
+            setAiObservations(analysis.observations || "");
+            setFormData((prev: any) => {
+              const next = { ...prev };
+              Object.keys(params).forEach(key => {
+                if (key in next) {
+                  const fields = method === 'REBA' ? REBA_FIELDS : method === 'RULA' ? RULA_FIELDS : method === 'OWAS' ? OWAS_FIELDS : null;
+                  if (fields && (fields as any)[key]) {
+                     next[key] = Math.max((fields as any)[key].min, Math.min((fields as any)[key].max, params[key]));
+                  }
                 }
-              }
+              });
+              return next;
             });
-            return next;
-          });
+            setStatusMessage({ text: lang === 'fa' ? 'تحلیل با موفقیت انجام شد' : 'Analysis complete', type: 'success' });
+          }
+        } catch (err) {
+          setStatusMessage({ text: lang === 'fa' ? 'خطا در تحلیل تصویر' : 'Error analyzing image', type: 'error' });
         }
         setIsAnalyzing(false);
       };
@@ -148,53 +189,137 @@ export default function App() {
     }
   };
 
+  const saveToHistory = () => {
+    const session: AssessmentSession = {
+      id: Date.now().toString(),
+      timestamp: Date.now(),
+      method,
+      metadata,
+      formData,
+      results,
+      image
+    };
+    const newHistory = [session, ...savedAssessments];
+    setSavedAssessments(newHistory);
+    localStorage.setItem('ergo_history', JSON.stringify(newHistory));
+    setStatusMessage({ text: lang === 'fa' ? 'ارزیابی در تاریخچه ذخیره شد' : 'Assessment saved to history', type: 'success' });
+  };
+
+  const exportData = () => {
+    try {
+      setStatusMessage({ text: lang === 'fa' ? 'در حال آماده‌سازی پشتیبان...' : 'Preparing backup...', type: 'info' });
+      const dataStr = JSON.stringify(savedAssessments);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const linkElement = document.createElement('a');
+      linkElement.setAttribute('href', url);
+      linkElement.setAttribute('download', `ergo_backup_${new Date().toISOString().split('T')[0]}.json`);
+      linkElement.click();
+      URL.revokeObjectURL(url);
+      setStatusMessage({ text: lang === 'fa' ? 'پشتیبان با موفقیت صادر شد' : 'Backup exported successfully', type: 'success' });
+    } catch (err) {
+      setStatusMessage({ text: lang === 'fa' ? 'خطا در صدور پشتیبان' : 'Error exporting backup', type: 'error' });
+    }
+  };
+
+  const importData = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setStatusMessage({ text: lang === 'fa' ? 'در حال بازیابی داده‌ها...' : 'Restoring data...', type: 'info' });
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const imported = JSON.parse(event.target?.result as string);
+        if (!Array.isArray(imported)) throw new Error('Invalid format');
+        
+        setSavedAssessments(imported);
+        localStorage.setItem('ergo_history', JSON.stringify(imported));
+        setStatusMessage({ text: lang === 'fa' ? 'داده‌ها با موفقیت بازیابی شدند' : 'Data restored successfully', type: 'success' });
+      } catch (err) {
+        setStatusMessage({ text: lang === 'fa' ? 'فایل پشتیبان معتبر نیست' : 'Invalid backup file', type: 'error' });
+      }
+    };
+    reader.onerror = () => setStatusMessage({ text: 'Error reading file', type: 'error' });
+    reader.readAsText(file);
+    // Reset input
+    e.target.value = '';
+  };
+
   const t = {
-    aiAnalysis: lang === 'fa' ? "تحلیل تصویری (AI)" : "Visual AI Analysis",
-    analyzing: lang === 'fa' ? "در حال تحلیل..." : "Analyzing...",
+    aiAnalysis: lang === 'fa' ? "تحلیل هوشمند" : "AI Analysis",
+    analyzing: lang === 'fa' ? "در حال پردازش..." : "Analyzing...",
     changeImg: lang === 'fa' ? "تغییر تصویر" : "Change Image",
-    uploadPrompt: lang === 'fa' ? "بارگذاری تصویر برای تحلیل خودکار" : "Upload Image for Auto-Analysis",
+    uploadPrompt: lang === 'fa' ? "بارگذاری تصویر" : "Upload Image",
     uploadSub: lang === 'fa' ? "تصویر پوسچر کاری را انتخاب کنید" : "Select workplace posture image",
-    aiObs: lang === 'fa' ? "مشاهدات هوش مصنوعی" : "AI Observations",
+    aiObs: lang === 'fa' ? "مشاهدات هوشمند" : "AI Observations",
     finalScore: lang === 'fa' ? "امتیاز نهایی" : "Final Score",
-    recommendations: lang === 'fa' ? "اقدامات اصلاحی پیشنهادی" : "Recommended Actions",
+    recommendations: lang === 'fa' ? "توصیه‌های اصلاحی" : "Recommendations",
     parameters: lang === 'fa' ? "پارامترهای" : "Parameters",
     printReport: lang === 'fa' ? "چاپ گزارش" : "Print Report",
-    saveAss: lang === 'fa' ? "ذخیره ارزیابی" : "Save Assessment",
-    loadWeight: lang === 'fa' ? "وزن بار (کیلوگرم)" : "Load Weight (kg)",
-    hDist: lang === 'fa' ? "فاصله افقی (سانتی‌متر)" : "Horizontal Distance (cm)",
-    vDist: lang === 'fa' ? "فاصله عمودی (سانتی‌متر)" : "Vertical Distance (cm)",
-    asym: lang === 'fa' ? "ناقرینگی (درجه)" : "Asymmetry (degrees)",
-    coupling: lang === 'fa' ? "کیفیت گرفتن (Coupling)" : "Coupling Quality",
+    saveAss: lang === 'fa' ? "ذخیره در تاریخچه" : "Save to History",
+    loadWeight: lang === 'fa' ? "وزن بار (kg)" : "Load Weight (kg)",
+    hDist: lang === 'fa' ? "فاصله افقی (cm)" : "Horizontal Distance (cm)",
+    vDist: lang === 'fa' ? "فاصله عمودی (cm)" : "Vertical Distance (cm)",
+    asym: lang === 'fa' ? "ناقرینگی (درجه)" : "Asymmetry (deg)",
+    coupling: lang === 'fa' ? "کیفیت گرفتن" : "Coupling",
     good: lang === 'fa' ? "خوب" : "Good",
     fair: lang === 'fa' ? "متوسط" : "Fair",
     poor: lang === 'fa' ? "ضعیف" : "Poor",
-    footerSub: lang === 'fa' ? "طراحی شده برای ممیزی حرفه‌ای ارگونومی" : "Designed for Professional Ergonomic Auditing",
+    footerSub: lang === 'fa' ? "سیستم مدیریت ارزیابی‌های ارگونومی" : "Ergonomic Assessment Management System",
+    metadataTitle: lang === 'fa' ? "اطلاعات شناسنامه‌ای ارزیابی" : "Assessment Metadata",
+    jobTitle: lang === 'fa' ? "عنوان پست کاری" : "Job Title",
+    assessor: lang === 'fa' ? "نام ارزیاب" : "Assessor Name",
+    evalee: lang === 'fa' ? "نام ارزیابی‌شونده" : "Evalee Name",
+    date: lang === 'fa' ? "تاریخ انجام (شمسی)" : "Assessment Date",
+    history: lang === 'fa' ? "تاریخچه ارزیابی‌ها" : "History",
+    backup: lang === 'fa' ? "پشتیبان‌گیری" : "Backup",
+    restore: lang === 'fa' ? "بازیابی داده" : "Restore",
+    emptyHistory: lang === 'fa' ? "هیچ ارزیابی ذخیره شده‌ای وجود ندارد" : "No saved assessments",
+    untitled: lang === 'fa' ? "بدون عنوان" : "Untitled",
+    reportTitle: lang === 'fa' ? "گزارش ارزیابی ارگونومی" : "Ergonomic Assessment Report",
+    settings: lang === 'fa' ? "تنظیمات" : "Settings"
   };
 
   return (
-    <div className="min-h-screen pb-12 transition-all duration-300">
+    <div className="min-h-screen pb-12 transition-all duration-300 bg-slate-50 dark:bg-[#0d1117] text-slate-900 dark:text-[#e6edf3]">
+      
+      {/* Toast Notification */}
+      {statusMessage && (
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded-2xl shadow-2xl border flex items-center gap-3 transition-all animate-bounce-short
+          ${statusMessage.type === 'success' ? 'bg-emerald-500 text-white border-emerald-400' : 
+            statusMessage.type === 'error' ? 'bg-red-500 text-white border-red-400' : 
+            'bg-blue-600 text-white border-blue-400'}`}>
+          <span className="text-lg">
+            {statusMessage.type === 'success' ? '✅' : statusMessage.type === 'error' ? '❌' : 'ℹ️'}
+          </span>
+          <span className="text-xs font-bold uppercase tracking-tight">{statusMessage.text}</span>
+        </div>
+      )}
+
       {/* Header */}
-      <header className="bg-[#1c2434]/80 backdrop-blur-md sticky top-0 z-50 border-b border-white/10 px-6 py-4 flex items-center justify-between">
+      <header className="no-print bg-white/80 dark:bg-[#1c2434]/80 backdrop-blur-md sticky top-0 z-50 border-b border-slate-200 dark:border-white/10 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
             <span className="text-xl">🪑</span>
           </div>
           <div>
-            <h1 className="text-lg font-bold tracking-tight text-white leading-none">ErgoPro AI</h1>
-            <p className="text-[10px] uppercase tracking-widest text-slate-400 mt-1">Industrial Assessment Suite</p>
+            <h1 className="text-lg font-bold tracking-tight leading-none">ErgoPro AI</h1>
+            <p className="text-[10px] uppercase tracking-widest text-slate-500 mt-1">Industrial Suite</p>
           </div>
         </div>
         
-        <div className="flex items-center gap-6">
-          <nav className="hidden md:flex items-center gap-2">
+        <div className="flex items-center gap-4">
+          <nav className="hidden lg:flex items-center gap-1 bg-slate-100 dark:bg-white/5 p-1 rounded-xl border border-slate-200 dark:border-white/10">
             {(['REBA', 'RULA', 'OWAS', 'NIOSH'] as MethodType[]).map((m) => (
               <button
                 key={m}
                 onClick={() => setMethod(m)}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
                   method === m 
-                  ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20" 
-                  : "text-slate-400 hover:text-white hover:bg-white/5"
+                  ? "bg-blue-600 text-white shadow-md" 
+                  : "text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-white"
                 }`}
               >
                 {m}
@@ -202,84 +327,155 @@ export default function App() {
             ))}
           </nav>
 
-          <button 
-            onClick={() => setLang(l => l === 'fa' ? 'en' : 'fa')}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/10 bg-white/5 hover:bg-white/10 transition-colors"
-          >
-            <span className="text-sm">🌐</span>
-            <span className="text-[10px] font-bold uppercase">{lang === 'fa' ? 'English' : 'فارسی'}</span>
-          </button>
+          <div className="flex items-center gap-2 border-l border-slate-200 dark:border-white/10 pl-4 ml-2">
+            <button 
+              onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+              className="p-2 rounded-lg bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 transition-colors"
+              title="Toggle Theme"
+            >
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </button>
+            <button 
+              onClick={() => setLang(l => l === 'fa' ? 'en' : 'fa')}
+              className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-white/5 text-[10px] font-bold uppercase transition-colors"
+            >
+              {lang === 'fa' ? 'English' : 'فارسی'}
+            </button>
+          </div>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 mt-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <main className="max-w-7xl mx-auto px-6 mt-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
         
-        {/* Left Column */}
+        {/* Left Column: Metadata & Results */}
         <div className="lg:col-span-5 space-y-6">
-          <section className="bg-slate-900 border border-white/5 rounded-2xl overflow-hidden shadow-xl">
-            <div className="p-4 border-b border-white/5 flex items-center justify-between bg-white/5">
+          {/* Metadata Section */}
+          <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/5 rounded-2xl shadow-sm p-6 no-print">
+            <h2 className="text-sm font-bold mb-4 flex items-center gap-2 border-b dark:border-white/5 pb-2">
+              <span>📋</span> {t.metadataTitle}
+            </h2>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2">
+                <label className="text-[10px] text-slate-500 uppercase block mb-1 font-bold">{t.jobTitle}</label>
+                <input 
+                  placeholder={lang === 'fa' ? 'مثال: اپراتور پرس' : 'e.g. Press Operator'}
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs outline-none focus:border-blue-500 dark:text-white transition-all" 
+                  value={metadata.jobTitle}
+                  onChange={e => handleMetadataChange('jobTitle', e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 uppercase block mb-1 font-bold">{t.assessor}</label>
+                <input 
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs outline-none focus:border-blue-500 dark:text-white transition-all" 
+                  value={metadata.assessor}
+                  onChange={e => handleMetadataChange('assessor', e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 uppercase block mb-1 font-bold">{t.evalee}</label>
+                <input 
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs outline-none focus:border-blue-500 dark:text-white transition-all" 
+                  value={metadata.evalee}
+                  onChange={e => handleMetadataChange('evalee', e.target.value)}
+                />
+              </div>
+              <div className="col-span-2">
+                <label className="text-[10px] text-slate-500 uppercase block mb-1 font-bold">{t.date}</label>
+                <input 
+                  type="text"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs outline-none focus:border-blue-500 dark:text-white transition-all" 
+                  value={metadata.date}
+                  onChange={e => handleMetadataChange('date', e.target.value)}
+                />
+                <p className="text-[9px] text-slate-400 mt-1 italic">{lang === 'fa' ? 'پیش‌فرض: امروز (قابل ویرایش)' : 'Default: Today (Editable)'}</p>
+              </div>
+            </div>
+          </section>
+
+          {/* AI Visualization */}
+          <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/5 rounded-2xl overflow-hidden shadow-sm">
+            <div className="p-4 border-b border-slate-100 dark:border-white/5 flex items-center justify-between bg-slate-50 dark:bg-white/5">
               <h2 className="text-sm font-bold flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
                 {t.aiAnalysis}
               </h2>
-              {isAnalyzing && <div className="text-[10px] text-blue-400 animate-pulse">{t.analyzing}</div>}
+              {isAnalyzing && <div className="text-[10px] text-blue-500 animate-pulse">{t.analyzing}</div>}
             </div>
             
             <div className="p-6">
               {image ? (
                 <div className="relative group">
-                  <img src={image} className="w-full rounded-xl object-cover max-h-[400px] border border-white/10" />
-                  <label className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center cursor-pointer transition-opacity rounded-xl backdrop-blur-sm">
-                    <span className="bg-white text-black px-4 py-2 rounded-lg text-xs font-bold">{t.changeImg}</span>
+                  <img src={image} className="w-full rounded-xl object-cover max-h-[400px] border border-slate-200 dark:border-white/10 shadow-lg" />
+                  <label className="no-print absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center cursor-pointer transition-opacity rounded-xl backdrop-blur-sm">
+                    <span className="bg-white text-black px-4 py-2 rounded-lg text-xs font-bold shadow-xl">{t.changeImg}</span>
                     <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
                   </label>
                 </div>
               ) : (
-                <label className="w-full border-2 border-dashed border-slate-700 rounded-2xl py-20 flex flex-col items-center justify-center gap-4 cursor-pointer hover:border-blue-500/50 hover:bg-blue-500/5 transition-all group">
-                  <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center text-2xl group-hover:scale-110 transition-transform">📸</div>
+                <label className="w-full border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-2xl py-20 flex flex-col items-center justify-center gap-4 cursor-pointer hover:border-blue-500/50 hover:bg-blue-500/5 transition-all group">
+                  <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-2xl group-hover:scale-110 transition-transform shadow-inner">📸</div>
                   <div className="text-center">
-                    <p className="text-sm font-bold text-slate-300">{t.uploadPrompt}</p>
-                    <p className="text-[10px] text-slate-500 mt-1">{t.uploadSub}</p>
+                    <p className="text-sm font-bold text-slate-600 dark:text-slate-300">{t.uploadPrompt}</p>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">{t.uploadSub}</p>
                   </div>
                   <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
                 </label>
               )}
 
               {aiObservations && (
-                <div className="mt-6 p-4 bg-blue-500/5 border border-blue-500/20 rounded-xl">
-                  <h3 className="text-xs font-bold text-blue-400 mb-2 flex items-center gap-2">
+                <div className="mt-4 p-4 bg-blue-500/5 dark:bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                  <h3 className="text-xs font-bold text-blue-600 dark:text-blue-400 mb-1 flex items-center gap-2 uppercase tracking-wide">
                     <span>💡</span> {t.aiObs}
                   </h3>
-                  <p className="text-xs text-slate-400 leading-relaxed">{aiObservations}</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed font-medium italic">{aiObservations}</p>
                 </div>
               )}
             </div>
           </section>
 
+          {/* Results Card */}
           {results && (
-            <section className="bg-slate-900 border border-white/5 rounded-2xl p-6 shadow-xl relative overflow-hidden">
-               <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/10 blur-[60px] rounded-full -mr-16 -mt-16"></div>
-               <div className="text-center">
-                  <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold mb-2">{t.finalScore} {method}</p>
-                  <div className="inline-block relative">
-                    <span className="text-7xl font-black tabular-nums" style={{ color: results.color }}>
-                      {results.total !== undefined ? results.total : results.category !== undefined ? results.category : results.LI}
-                    </span>
+            <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/5 rounded-2xl p-6 shadow-sm relative overflow-hidden transition-all hover:shadow-md">
+               <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 blur-[60px] rounded-full -mr-16 -mt-16"></div>
+               
+               {/* Report Header (Print only) */}
+               <div className="print-only mb-10 border-b-2 border-slate-900 dark:border-white pb-6">
+                  <h1 className="text-3xl font-black mb-4 text-center uppercase tracking-tighter">{t.reportTitle}</h1>
+                  <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm border p-4 rounded-xl bg-slate-50 dark:bg-slate-800">
+                    <p><strong>{t.jobTitle}:</strong> <span className="underline">{metadata.jobTitle || '---'}</span></p>
+                    <p><strong>{t.evalee}:</strong> <span className="underline">{metadata.evalee || '---'}</span></p>
+                    <p><strong>{t.assessor}:</strong> <span className="underline">{metadata.assessor || '---'}</span></p>
+                    <p><strong>{t.date}:</strong> <span className="underline">{metadata.date || '---'}</span></p>
                   </div>
-                  <div className="mt-4 inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold border" style={{ borderColor: `${results.color}44`, backgroundColor: `${results.color}11`, color: results.color }}>
-                    <span className="w-2 h-2 rounded-full animate-ping" style={{ backgroundColor: results.color }}></span>
+                  {image && (
+                    <div className="mt-8 text-center">
+                       <p className="text-xs font-bold mb-2 uppercase text-slate-500 tracking-widest">{lang === 'fa' ? 'تصویر وضعیت ارزیابی شده' : 'Posture Image'}</p>
+                       <img src={image} className="max-h-[350px] mx-auto rounded-lg border-4 border-white dark:border-slate-700 shadow-xl" />
+                    </div>
+                  )}
+               </div>
+
+               <div className="text-center relative">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold mb-2">{t.finalScore} {method}</p>
+                  <span className="text-7xl font-black tabular-nums transition-all" style={{ color: results.color }}>
+                    {results.total !== undefined ? results.total : results.category !== undefined ? results.category : results.LI}
+                  </span>
+                  
+                  <div className="mt-4 inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-black border-2 shadow-sm uppercase tracking-wide" style={{ borderColor: `${results.color}66`, backgroundColor: `${results.color}11`, color: results.color }}>
                     {results.level}
                   </div>
-                  <p className="mt-4 text-slate-300 font-medium">{results.action}</p>
+                  <p className="mt-4 text-slate-600 dark:text-slate-200 font-bold text-lg">{results.action}</p>
                </div>
-               <div className="mt-8 pt-8 border-t border-white/5 space-y-4">
-                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">{t.recommendations}</h4>
+
+               <div className="mt-8 pt-8 border-t border-slate-100 dark:border-white/5 space-y-4">
+                  <h4 className="text-xs font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest">{t.recommendations}</h4>
                   {corrections.map((corr, i) => (
-                    <div key={i} className="flex gap-4 p-3 bg-white/2 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
-                      <div className="text-2xl shrink-0">{corr.icon}</div>
-                      <div className={lang === 'fa' ? 'text-right' : 'text-left'}>
-                        <h5 className="text-xs font-bold text-white mb-1">{corr.title}</h5>
-                        <p className="text-[11px] text-slate-500 leading-normal">{corr.detail}</p>
+                    <div key={i} className="flex gap-4 p-4 bg-slate-50 dark:bg-white/2 rounded-xl border border-slate-200 dark:border-white/5 shadow-sm hover:border-blue-500/20 transition-all">
+                      <div className="text-3xl shrink-0">{corr.icon}</div>
+                      <div>
+                        <h5 className="text-xs font-black mb-1 text-slate-900 dark:text-white uppercase">{corr.title}</h5>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed font-medium">{corr.detail}</p>
                       </div>
                     </div>
                   ))}
@@ -288,25 +484,25 @@ export default function App() {
           )}
         </div>
 
-        {/* Right Column */}
-        <div className="lg:col-span-7">
-          <section className="bg-slate-900 border border-white/5 rounded-2xl shadow-xl">
-            <div className="p-6 border-b border-white/5 flex items-center justify-between">
+        {/* Right Column: Controls & Persistence */}
+        <div className="lg:col-span-7 space-y-8">
+          {/* Method Parameters */}
+          <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/5 rounded-2xl shadow-sm hover:shadow-md transition-shadow">
+            <div className="p-6 border-b border-slate-100 dark:border-white/5 flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-bold flex items-center gap-3">
-                  <span>{METHOD_METADATA[method].icon}</span>
-                  {t.parameters} {lang === 'fa' ? METHOD_METADATA[method].name : METHOD_METADATA[method].name}
+                  <span className="text-2xl">{METHOD_METADATA[method].icon}</span>
+                  {t.parameters} {method}
                 </h2>
-                <p className="text-[11px] text-slate-500 mt-1">{lang === 'fa' ? METHOD_METADATA[method].descFa : METHOD_METADATA[method].descEn}</p>
-              </div>
-              <div className="px-3 py-1 bg-white/5 rounded-lg border border-white/10 text-[10px] font-mono text-slate-400 uppercase">
-                {lang === 'fa' ? 'نسخه ۳.۲.۰' : 'v3.2.0'}
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 font-medium italic">
+                  {lang === 'fa' ? METHOD_METADATA[method].descFa : METHOD_METADATA[method].descEn}
+                </p>
               </div>
             </div>
 
             <div className="p-8">
               {method !== 'NIOSH' ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12">
                   {Object.entries(
                     method === 'REBA' ? REBA_FIELDS : 
                     method === 'RULA' ? RULA_FIELDS : 
@@ -323,108 +519,132 @@ export default function App() {
                   ))}
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div className="space-y-6">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 mb-2 uppercase tracking-wide">{t.loadWeight}</label>
-                      <input 
-                        type="number" 
-                        value={formData.weight || ''} 
-                        onChange={e => handleValueChange('weight', parseFloat(e.target.value) || 0)}
-                        className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-blue-500 outline-none transition-colors"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 mb-2 uppercase tracking-wide">{t.hDist}</label>
-                      <input 
-                        type="number" 
-                        value={formData.hDist || ''} 
-                        onChange={e => handleValueChange('hDist', parseFloat(e.target.value) || 0)}
-                        className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-blue-500 outline-none transition-colors"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 mb-2 uppercase tracking-wide">{t.vDist}</label>
-                      <input 
-                        type="number" 
-                        value={formData.vDist || ''} 
-                        onChange={e => handleValueChange('vDist', parseFloat(e.target.value) || 0)}
-                        className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-blue-500 outline-none transition-colors"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-6">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 mb-2 uppercase tracking-wide">{t.asym}</label>
-                      <input 
-                        type="number" 
-                        value={formData.asymmetry || ''} 
-                        onChange={e => handleValueChange('asymmetry', parseFloat(e.target.value) || 0)}
-                        className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-blue-500 outline-none transition-colors"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 mb-2 uppercase tracking-wide">{t.coupling}</label>
-                      <select 
-                        value={formData.coupling || 'good'} 
-                        onChange={e => handleValueChange('coupling', e.target.value)}
-                        className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-blue-500 outline-none transition-colors appearance-none"
-                      >
-                        <option value="good">{t.good}</option>
-                        <option value="fair">{t.fair}</option>
-                        <option value="poor">{t.poor}</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {results && method === 'NIOSH' && (
-                <div className="mt-12 p-6 bg-slate-800/50 border border-white/5 rounded-2xl grid grid-cols-2 md:grid-cols-4 gap-6">
-                   <div className="text-center">
-                     <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">RWL</p>
-                     <p className="text-xl font-bold text-blue-400">{results.RWL} kg</p>
+                <div className="grid grid-cols-2 gap-8">
+                   <div className="space-y-4">
+                      <label className="text-[10px] font-black text-slate-500 block uppercase tracking-wider">{t.loadWeight}</label>
+                      <input className="w-full bg-slate-50 dark:bg-slate-800 border dark:border-white/10 p-3 rounded-xl text-sm font-bold shadow-inner focus:border-blue-500 outline-none transition-all dark:text-white" type="number" value={formData.weight} onChange={e => handleValueChange('weight', parseFloat(e.target.value))} />
                    </div>
-                   <div className="text-center">
-                     <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">LI</p>
-                     <p className="text-xl font-bold text-orange-400">{results.LI}</p>
-                   </div>
-                   <div className="text-center">
-                     <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">HM</p>
-                     <p className="text-sm font-bold text-slate-300">{results.HM}</p>
-                   </div>
-                   <div className="text-center">
-                     <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">VM</p>
-                     <p className="text-sm font-bold text-slate-300">{results.VM}</p>
+                   <div className="space-y-4">
+                      <label className="text-[10px] font-black text-slate-500 block uppercase tracking-wider">{t.hDist}</label>
+                      <input className="w-full bg-slate-50 dark:bg-slate-800 border dark:border-white/10 p-3 rounded-xl text-sm font-bold shadow-inner focus:border-blue-500 outline-none transition-all dark:text-white" type="number" value={formData.hDist} onChange={e => handleValueChange('hDist', parseFloat(e.target.value))} />
                    </div>
                 </div>
               )}
             </div>
 
-            <div className="px-8 py-6 bg-white/2 border-t border-white/5 flex justify-end gap-4">
+            {/* Actions Bar */}
+            <div className="no-print px-8 py-6 bg-slate-50 dark:bg-white/2 border-t border-slate-200 dark:border-white/5 flex flex-wrap justify-end gap-3 items-center">
+              <div className="flex gap-2 p-1 bg-white/50 dark:bg-black/20 rounded-xl border border-slate-200 dark:border-white/5 shadow-inner">
+                <button 
+                  onClick={exportData}
+                  title={t.backup}
+                  className="p-2.5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-all shadow-sm"
+                >
+                  💾
+                </button>
+                <button 
+                  onClick={() => fileInputRef.current?.click()}
+                  title={t.restore}
+                  className="p-2.5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-all shadow-sm"
+                >
+                  📂
+                </button>
+              </div>
+              <input ref={fileInputRef} type="file" className="hidden" accept=".json" onChange={importData} />
+              
+              <div className="grow"></div>
+
+              <button 
+                onClick={saveToHistory}
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-black rounded-xl uppercase transition-all shadow-lg shadow-emerald-600/20 active:scale-95"
+              >
+                📥 {t.saveAss}
+              </button>
               <button 
                 onClick={() => window.print()}
-                className="px-6 py-2.5 bg-white/5 hover:bg-white/10 text-white text-xs font-bold rounded-xl transition-all border border-white/10"
+                className="px-8 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black rounded-xl transition-all shadow-xl shadow-blue-600/30 active:scale-95"
               >
-                {t.printReport}
-              </button>
-              <button 
-                className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl transition-all shadow-lg shadow-blue-600/20"
-              >
-                {t.saveAss}
+                🖨️ {t.printReport}
               </button>
             </div>
+          </section>
+
+          {/* History / Sessions Management */}
+          <section className="no-print bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/5 rounded-2xl shadow-sm overflow-hidden hover:shadow-md transition-shadow">
+             <div className="p-4 bg-slate-50 dark:bg-white/5 border-b border-slate-200 dark:border-white/5 flex items-center justify-between">
+                <h3 className="text-sm font-bold flex items-center gap-2 uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                  <span>📜</span> {t.history} <span className="bg-blue-500/10 text-blue-500 px-2 py-0.5 rounded-full text-[10px] font-black">{savedAssessments.length}</span>
+                </h3>
+             </div>
+             <div className="max-h-[350px] overflow-y-auto custom-scrollbar">
+               {savedAssessments.length === 0 ? (
+                 <div className="p-12 text-center text-slate-400 text-xs italic">
+                   {t.emptyHistory}
+                 </div>
+               ) : (
+                 <div className="divide-y divide-slate-100 dark:divide-white/5">
+                   {savedAssessments.map(item => (
+                     <div key={item.id} className="p-4 hover:bg-slate-50 dark:hover:bg-white/2 transition-colors flex items-center justify-between group">
+                        <div className="flex items-center gap-4">
+                          <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-600 flex items-center justify-center text-xs font-black shadow-sm border border-blue-500/10">
+                            {item.method}
+                          </div>
+                          <div>
+                            <p className="text-xs font-black text-slate-800 dark:text-slate-200">{item.metadata.jobTitle || t.untitled}</p>
+                            <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium">{item.metadata.evalee || '---'} | {item.metadata.date}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all translate-x-2 group-hover:translate-x-0">
+                           <button 
+                            onClick={() => {
+                              setMethod(item.method);
+                              setMetadata(item.metadata);
+                              setFormData(item.formData);
+                              setImage(item.image);
+                              setStatusMessage({ text: lang === 'fa' ? 'نشست فراخوانی شد' : 'Session loaded', type: 'info' });
+                            }}
+                            className="p-2 rounded-lg bg-blue-500/10 text-blue-600 hover:bg-blue-500 hover:text-white transition-all shadow-sm"
+                            title="Restore this session"
+                           >👁️</button>
+                           <button 
+                            onClick={() => {
+                              if(confirm(lang === 'fa' ? 'آیا از حذف این مورد اطمینان دارید؟' : 'Delete this item?')){
+                                const updated = savedAssessments.filter(a => a.id !== item.id);
+                                setSavedAssessments(updated);
+                                localStorage.setItem('ergo_history', JSON.stringify(updated));
+                                setStatusMessage({ text: lang === 'fa' ? 'حذف شد' : 'Deleted', type: 'info' });
+                              }
+                            }}
+                            className="p-2 rounded-lg bg-red-500/10 text-red-600 hover:bg-red-500 hover:text-white transition-all shadow-sm"
+                            title="Delete"
+                           >🗑️</button>
+                        </div>
+                     </div>
+                   ))}
+                 </div>
+               )}
+             </div>
           </section>
         </div>
       </main>
 
-      <footer className="mt-12 py-8 text-center border-t border-white/5">
-        <p className="text-[10px] text-slate-500 uppercase tracking-widest">{t.footerSub}</p>
-        <div className="flex justify-center gap-6 mt-4">
-          <span className="text-[10px] text-slate-600">ISO 11228 Compliant</span>
-          <span className="text-[10px] text-slate-600">AI Engine 2.5</span>
-          <span className="text-[10px] text-slate-600">Safe System Certification</span>
+      <footer className="no-print mt-20 py-12 text-center border-t border-slate-200 dark:border-white/5 opacity-80">
+        <p className="text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-[0.3em] font-black">{t.footerSub}</p>
+        <div className="flex justify-center gap-8 mt-6">
+          <div className="flex items-center gap-2 grayscale hover:grayscale-0 transition-all cursor-help" title="Compliance">
+             <span className="text-xl">⚖️</span>
+             <span className="text-[9px] text-slate-500 dark:text-slate-400 font-black uppercase">ISO 11228-1/2/3</span>
+          </div>
+          <div className="flex items-center gap-2 grayscale hover:grayscale-0 transition-all cursor-help" title="Local First">
+             <span className="text-xl">🔒</span>
+             <span className="text-[9px] text-slate-500 dark:text-slate-400 font-black uppercase">Offline Encrypted</span>
+          </div>
+          <div className="flex items-center gap-2 grayscale hover:grayscale-0 transition-all cursor-help" title="Intelligence">
+             <span className="text-xl">🧠</span>
+             <span className="text-[9px] text-slate-500 dark:text-slate-400 font-black uppercase">Gemini Flash 3.0</span>
+          </div>
         </div>
+        <p className="text-[8px] text-slate-400 mt-8 uppercase tracking-widest font-medium">ErgoPro Suite Build 2025.02.R5 LTS</p>
       </footer>
     </div>
   );
