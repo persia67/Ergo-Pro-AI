@@ -20,6 +20,12 @@ export interface AssessmentSession {
   image: string | null;
 }
 
+export interface AIConfig {
+  provider: 'gemini' | 'ollama';
+  ollamaUrl: string;
+  ollamaModel: string;
+}
+
 export interface Correction {
   title: string;
   detail: string;

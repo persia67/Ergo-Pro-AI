@@ -12,8 +12,9 @@ import {
   OWAS_FIELDS,
   getTodayShamsi
 } from './constants';
-import { MethodType, Correction, Language, Theme, AssessmentMetadata, AssessmentSession } from './types';
-import { analyzePostureFromImage } from './geminiService';
+import localforage from 'localforage';
+import { MethodType, Correction, Language, Theme, AssessmentMetadata, AssessmentSession, AIConfig } from './types';
+import { analyzePostureFromMedia } from './aiService';
 
 // --- Sub-components ---
 
@@ -23,7 +24,8 @@ const SliderField: React.FC<{
   value: number; 
   onChange: (key: string, val: number) => void;
   lang: Language;
-}> = ({ field, fieldKey, value, onChange, lang }) => {
+  aiReason?: string;
+}> = ({ field, fieldKey, value, onChange, lang, aiReason }) => {
   const label = lang === 'en' ? field.labelEn : field.labelFa;
   const descriptions = lang === 'en' ? field.en : field.fa;
   const help = lang === 'en' ? field.helpEn : field.helpFa;
@@ -53,6 +55,12 @@ const SliderField: React.FC<{
         ))}
       </div>
       <p className="text-[10px] text-slate-400 dark:text-slate-600 mt-2 italic">{help}</p>
+      {aiReason && (
+        <div className="mt-2 p-2 bg-blue-50/50 dark:bg-blue-900/10 border-l-2 border-blue-500 text-[10px] text-slate-600 dark:text-slate-300 rounded-r">
+          <span className="font-bold text-blue-600 dark:text-blue-400 mr-1">{lang === 'fa' ? 'علت امتیاز:' : 'Reason:'}</span> 
+          {aiReason}
+        </div>
+      )}
     </div>
   );
 };
@@ -65,11 +73,25 @@ export default function App() {
   const [image, setImage] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiObservations, setAiObservations] = useState<string>("");
+  const [aiReasons, setAiReasons] = useState<Record<string, string>>({});
   const [lang, setLang] = useState<Language>('fa');
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('ergo_theme') as Theme) || 'dark');
   const [statusMessage, setStatusMessage] = useState<{ text: string, type: 'success' | 'error' | 'info' } | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  
+  const [aiConfig, setAiConfig] = useState<AIConfig>(() => {
+    try {
+      const stored = localStorage.getItem('ergo_ai_config');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return { provider: 'gemini', ollamaUrl: 'http://localhost:11434', ollamaModel: 'llava' };
+  });
+
+  useEffect(() => {
+    localStorage.setItem('ergo_ai_config', JSON.stringify(aiConfig));
+  }, [aiConfig]);
   
   // Metadata Persistence
   const [metadata, setMetadata] = useState<AssessmentMetadata>(() => {
@@ -82,12 +104,25 @@ export default function App() {
     };
   });
   
-  const [savedAssessments, setSavedAssessments] = useState<AssessmentSession[]>(() => {
-    try {
-      const history = localStorage.getItem('ergo_history');
-      return history ? JSON.parse(history) : [];
-    } catch { return []; }
-  });
+  const [savedAssessments, setSavedAssessments] = useState<AssessmentSession[]>([]);
+
+  useEffect(() => {
+    localforage.getItem<AssessmentSession[]>('ergo_history').then((history) => {
+      if (history) {
+        setSavedAssessments(history);
+      } else {
+        // Fallback or migration from localStorage if exists
+        try {
+          const oldHistoryStr = localStorage.getItem('ergo_history');
+          if (oldHistoryStr) {
+            const oldHistory = JSON.parse(oldHistoryStr);
+            setSavedAssessments(oldHistory);
+            localforage.setItem('ergo_history', oldHistory);
+          }
+        } catch { }
+      }
+    });
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -154,41 +189,94 @@ export default function App() {
     }
   };
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64 = (reader.result as string).split(',')[1];
-        setImage(reader.result as string);
-        setIsAnalyzing(true);
-        setStatusMessage({ text: lang === 'fa' ? 'در حال تحلیل هوشمند تصویر...' : 'AI Analyzing image...', type: 'info' });
+    if (!file) return;
+    
+    setAiReasons({});
+    setAiObservations("");
+    setImage(null);
+    setIsAnalyzing(true);
+    
+    try {
+      let parts: any[] = [];
+      let previewImage = "";
+      
+      if (file.type.startsWith('video/')) {
+        setStatusMessage({ text: lang === 'fa' ? 'در حال استخراج فریم‌های ویدیو...' : 'Extracting video frames...', type: 'info' });
+        const video = document.createElement('video');
+        video.src = URL.createObjectURL(file);
+        video.muted = true;
+        video.playsInline = true;
         
-        try {
-          const analysis = await analyzePostureFromImage(base64, method);
-          if (analysis) {
-            const params = analysis.estimatedParameters;
-            setAiObservations(analysis.observations || "");
-            setFormData((prev: any) => {
-              const next = { ...prev };
-              Object.keys(params).forEach(key => {
-                if (key in next) {
-                  const fields = method === 'REBA' ? REBA_FIELDS : method === 'RULA' ? RULA_FIELDS : method === 'OWAS' ? OWAS_FIELDS : null;
-                  if (fields && (fields as any)[key]) {
-                     next[key] = Math.max((fields as any)[key].min, Math.min((fields as any)[key].max, params[key]));
-                  }
-                }
-              });
-              return next;
-            });
-            setStatusMessage({ text: lang === 'fa' ? 'تحلیل با موفقیت پایان یافت' : 'AI Analysis completed successfully', type: 'success' });
-          }
-        } catch (err) {
-          setStatusMessage({ text: lang === 'fa' ? 'خطا در ارتباط با هوش مصنوعی' : 'Error connecting to AI service', type: 'error' });
-        }
-        setIsAnalyzing(false);
-      };
-      reader.readAsDataURL(file);
+        await new Promise<void>((resolve, reject) => {
+          video.onloadeddata = async () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            
+            const numFrames = 3;
+            for (let i = 0; i < numFrames; i++) {
+               video.currentTime = (video.duration / (numFrames + 1)) * (i + 1);
+               await new Promise<void>(r => {
+                  video.onseeked = () => {
+                    ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    const base64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+                    parts.push({ inlineData: { data: base64, mimeType: 'image/jpeg' } });
+                    if (i === 1) previewImage = canvas.toDataURL('image/jpeg', 0.8);
+                    r();
+                  };
+               });
+            }
+            URL.revokeObjectURL(video.src);
+            resolve();
+          };
+          video.onerror = () => reject(new Error("Video load failed"));
+        });
+      } else if (file.type.startsWith('image/')) {
+        setStatusMessage({ text: lang === 'fa' ? 'در حال آماده‌سازی تصویر...' : 'Preparing image...', type: 'info' });
+        await new Promise<void>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64 = (reader.result as string).split(',')[1];
+            parts.push({ inlineData: { data: base64, mimeType: file.type } });
+            previewImage = reader.result as string;
+            resolve();
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+
+      setImage(previewImage);
+      setStatusMessage({ text: lang === 'fa' ? 'در حال تحلیل هوشمند تصویر/ویدیو...' : 'AI Analyzing media...', type: 'info' });
+      
+      const analysis = await analyzePostureFromMedia(parts, method, lang, aiConfig);
+      if (analysis) {
+        const params = analysis.estimatedParameters;
+        if (analysis.parameterReasons) setAiReasons(analysis.parameterReasons);
+        setAiObservations(analysis.observations || "");
+        setFormData((prev: any) => {
+          const next = { ...prev };
+          Object.keys(params).forEach(key => {
+            if (key in next) {
+              const fields = method === 'REBA' ? REBA_FIELDS : method === 'RULA' ? RULA_FIELDS : method === 'OWAS' ? OWAS_FIELDS : null;
+              if (fields && (fields as any)[key]) {
+                 next[key] = Math.max((fields as any)[key].min, Math.min((fields as any)[key].max, params[key]));
+              }
+            }
+          });
+          return next;
+        });
+        setStatusMessage({ text: lang === 'fa' ? 'تحلیل با موفقیت پایان یافت' : 'AI Analysis completed successfully', type: 'success' });
+      } else {
+        throw new Error("Analysis failed");
+      }
+    } catch (err) {
+      console.error(err);
+      setStatusMessage({ text: lang === 'fa' ? 'خطا در ارتباط با هوش مصنوعی' : 'Error connecting to AI service', type: 'error' });
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
@@ -205,8 +293,8 @@ export default function App() {
       };
       const newHistory = [session, ...savedAssessments];
       setSavedAssessments(newHistory);
-      localStorage.setItem('ergo_history', JSON.stringify(newHistory));
-      setStatusMessage({ text: lang === 'fa' ? 'ارزیابی در تاریخچه محلی ذخیره شد' : 'Assessment saved to local history', type: 'success' });
+      localforage.setItem('ergo_history', newHistory);
+      setStatusMessage({ text: lang === 'fa' ? 'ارزیابی در پایگاه داده محلی ذخیره شد' : 'Assessment saved to local Database', type: 'success' });
     } catch (e) {
       setStatusMessage({ text: lang === 'fa' ? 'خطا در ذخیره‌سازی: ظرفیت حافظه پر است' : 'Storage error: Capacity might be full', type: 'error' });
     }
@@ -256,7 +344,7 @@ export default function App() {
         }
         
         setSavedAssessments(imported);
-        localStorage.setItem('ergo_history', JSON.stringify(imported));
+        localforage.setItem('ergo_history', imported);
         setStatusMessage({ 
           text: lang === 'fa' ? `${imported.length} مورد با موفقیت بازیابی شد` : `Successfully restored ${imported.length} items`, 
           type: 'success' 
@@ -279,9 +367,9 @@ export default function App() {
   const t = {
     aiAnalysis: lang === 'fa' ? "تحلیل هوشمند" : "AI Analysis",
     analyzing: lang === 'fa' ? "در حال پردازش..." : "Analyzing...",
-    changeImg: lang === 'fa' ? "تغییر تصویر" : "Change Image",
-    uploadPrompt: lang === 'fa' ? "بارگذاری تصویر" : "Upload Image",
-    uploadSub: lang === 'fa' ? "تصویر پوسچر کاری را انتخاب کنید" : "Select workplace posture image",
+    changeImg: lang === 'fa' ? "تغییر فایل" : "Change File",
+    uploadPrompt: lang === 'fa' ? "بارگذاری فیلم یا تصویر" : "Upload Video or Image",
+    uploadSub: lang === 'fa' ? "فیلم کوتاه یا تصویر پوسچر را انتخاب کنید" : "Select workplace posture video or image",
     aiObs: lang === 'fa' ? "مشاهدات هوشمند" : "AI Observations",
     finalScore: lang === 'fa' ? "امتیاز نهایی" : "Final Score",
     recommendations: lang === 'fa' ? "توصیه‌های اصلاحی" : "Recommendations",
@@ -367,6 +455,13 @@ export default function App() {
 
           <div className="flex items-center gap-2 border-l border-slate-200 dark:border-white/10 pl-4 ml-2">
             <button 
+              onClick={() => setIsSettingsOpen(true)}
+              className="p-2 rounded-lg bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 transition-colors hover:bg-slate-200 dark:hover:bg-white/10"
+              title={lang === 'fa' ? 'تنظیمات' : 'Settings'}
+            >
+              ⚙️
+            </button>
+            <button 
               onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
               className="p-2 rounded-lg bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 transition-colors hover:bg-slate-200 dark:hover:bg-white/10"
               title="Toggle Theme"
@@ -447,7 +542,7 @@ export default function App() {
                   <img src={image} className="w-full object-cover max-h-[400px] shadow-lg transition-transform group-hover:scale-105 duration-700" />
                   <label className="no-print absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center cursor-pointer transition-opacity backdrop-blur-sm">
                     <span className="bg-white text-black px-5 py-2.5 rounded-xl text-xs font-black shadow-2xl scale-90 group-hover:scale-100 transition-transform">{t.changeImg}</span>
-                    <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+                    <input type="file" className="hidden" accept="image/*,video/*" onChange={handleFileUpload} />
                   </label>
                 </div>
               ) : (
@@ -457,7 +552,7 @@ export default function App() {
                     <p className="text-sm font-black text-slate-600 dark:text-slate-300 group-hover:text-blue-500">{t.uploadPrompt}</p>
                     <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 font-medium">{t.uploadSub}</p>
                   </div>
-                  <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+                  <input type="file" className="hidden" accept="image/*,video/*" onChange={handleFileUpload} />
                 </label>
               )}
 
@@ -553,6 +648,7 @@ export default function App() {
                       value={formData[key] || (field as any).min || 0}
                       onChange={handleValueChange}
                       lang={lang}
+                      aiReason={aiReasons[key]}
                     />
                   ))}
                 </div>
@@ -620,7 +716,7 @@ export default function App() {
                     onClick={() => {
                       if(confirm(lang === 'fa' ? 'آیا کل تاریخچه ارزیابی‌ها حذف شود؟' : 'Clear all assessment history?')){
                         setSavedAssessments([]);
-                        localStorage.removeItem('ergo_history');
+                        localforage.removeItem('ergo_history');
                         setStatusMessage({ text: lang === 'fa' ? 'تاریخچه پاکسازی شد' : 'History cleared', type: 'info' });
                       }
                     }}
@@ -666,7 +762,7 @@ export default function App() {
                               if(confirm(lang === 'fa' ? 'این ارزیابی حذف شود؟' : 'Delete this assessment?')){
                                 const updated = savedAssessments.filter(a => a.id !== item.id);
                                 setSavedAssessments(updated);
-                                localStorage.setItem('ergo_history', JSON.stringify(updated));
+                                localforage.setItem('ergo_history', updated);
                                 setStatusMessage({ text: lang === 'fa' ? 'مورد حذف شد' : 'Item deleted', type: 'info' });
                               }
                             }}
@@ -701,6 +797,98 @@ export default function App() {
         </div>
         <p className="text-[9px] text-slate-400 mt-10 uppercase tracking-[0.2em] font-bold">ErgoPro Enterprise Suite • Build 2025.02.R6 LTS</p>
       </footer>
+
+      {/* Settings Modal */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl p-6 w-full max-w-md shadow-2xl border border-slate-200 dark:border-white/10">
+            <h2 className="text-lg font-bold mb-6 flex items-center justify-between">
+              <span>{lang === 'fa' ? '⚙️ تنظیمات برنامه' : '⚙️ App Settings'}</span>
+              <button 
+                onClick={() => setIsSettingsOpen(false)}
+                className="text-slate-400 hover:text-red-500 transition-colors text-xl"
+              >
+                ×
+              </button>
+            </h2>
+
+            <div className="space-y-6">
+              <div>
+                <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-2 uppercase">
+                  {lang === 'fa' ? 'موتور هوش مصنوعی' : 'AI Engine'}
+                </label>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => setAiConfig(prev => ({ ...prev, provider: 'gemini' }))}
+                    className={`flex-1 py-2 px-3 rounded-xl border text-sm font-bold transition-all ${
+                      aiConfig.provider === 'gemini' 
+                      ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400' 
+                      : 'border-slate-200 dark:border-white/10 text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5'
+                    }`}
+                  >
+                    Google Gemini
+                  </button>
+                  <button 
+                    onClick={() => setAiConfig(prev => ({ ...prev, provider: 'ollama' }))}
+                    className={`flex-1 py-2 px-3 rounded-xl border text-sm font-bold transition-all ${
+                      aiConfig.provider === 'ollama' 
+                      ? 'border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' 
+                      : 'border-slate-200 dark:border-white/10 text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5'
+                    }`}
+                  >
+                    Ollama (Offline)
+                  </button>
+                </div>
+              </div>
+
+              {aiConfig.provider === 'ollama' && (
+                <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1">
+                      {lang === 'fa' ? 'آدرس Ollama' : 'Ollama URL'}
+                    </label>
+                    <input 
+                      type="text" 
+                      value={aiConfig.ollamaUrl}
+                      onChange={e => setAiConfig(prev => ({ ...prev, ollamaUrl: e.target.value }))}
+                      className="w-full bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-mono"
+                      dir="ltr"
+                      placeholder="http://localhost:11434"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1">
+                      {lang === 'fa' ? 'مدل (Vision Model)' : 'Vision Model'}
+                    </label>
+                    <input 
+                      type="text" 
+                      value={aiConfig.ollamaModel}
+                      onChange={e => setAiConfig(prev => ({ ...prev, ollamaModel: e.target.value }))}
+                      className="w-full bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-mono"
+                      dir="ltr"
+                      placeholder="llava"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1 mt-1 leading-tight">
+                      {lang === 'fa' 
+                        ? 'نام مدلی که قابلیت پردازش تصویر دارد (مثل llava یا bakllava)' 
+                        : 'Name of the vision-capable model (e.g., llava, bakllava)'}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-8">
+              <button 
+                onClick={() => setIsSettingsOpen(false)}
+                className="w-full py-3 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-black font-black text-sm uppercase tracking-wide hover:opacity-90 transition-opacity"
+              >
+                {lang === 'fa' ? 'ذخیره و بستن' : 'Save & Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
