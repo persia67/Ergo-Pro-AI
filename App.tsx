@@ -261,8 +261,8 @@ export default function App() {
           Object.keys(params).forEach(key => {
             if (key in next) {
               const fields = method === 'REBA' ? REBA_FIELDS : method === 'RULA' ? RULA_FIELDS : method === 'OWAS' ? OWAS_FIELDS : null;
-              if (fields && (fields as any)[key]) {
-                 next[key] = Math.max((fields as any)[key].min, Math.min((fields as any)[key].max, params[key]));
+              if (fields && (fields as any)[key] && params[key] !== undefined && !isNaN(Number(params[key]))) {
+                 next[key] = Math.max((fields as any)[key].min, Math.min((fields as any)[key].max, Number(params[key])));
               }
             }
           });
@@ -493,7 +493,7 @@ export default function App() {
                 <input 
                   placeholder={lang === 'fa' ? 'مثال: اپراتور جوشکاری' : 'e.g. Welding Operator'}
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs outline-none focus:border-blue-500 dark:text-white transition-all font-bold" 
-                  value={metadata.jobTitle}
+                  value={metadata?.jobTitle ?? ''}
                   onChange={e => handleMetadataChange('jobTitle', e.target.value)}
                 />
               </div>
@@ -501,7 +501,7 @@ export default function App() {
                 <label className="text-[10px] text-slate-500 uppercase block mb-1 font-black">{t.assessor}</label>
                 <input 
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs outline-none focus:border-blue-500 dark:text-white transition-all font-bold" 
-                  value={metadata.assessor}
+                  value={metadata?.assessor ?? ''}
                   onChange={e => handleMetadataChange('assessor', e.target.value)}
                 />
               </div>
@@ -509,7 +509,7 @@ export default function App() {
                 <label className="text-[10px] text-slate-500 uppercase block mb-1 font-black">{t.evalee}</label>
                 <input 
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs outline-none focus:border-blue-500 dark:text-white transition-all font-bold" 
-                  value={metadata.evalee}
+                  value={metadata?.evalee ?? ''}
                   onChange={e => handleMetadataChange('evalee', e.target.value)}
                 />
               </div>
@@ -518,7 +518,7 @@ export default function App() {
                 <input 
                   type="text"
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs outline-none focus:border-blue-500 dark:text-white transition-all font-bold" 
-                  value={metadata.date}
+                  value={metadata?.date ?? ''}
                   onChange={e => handleMetadataChange('date', e.target.value)}
                 />
                 <p className="text-[9px] text-slate-400 mt-1 italic font-medium">{lang === 'fa' ? 'پیش‌فرض: امروز (قابل تغییر)' : 'Default: Today (Editable)'}</p>
@@ -656,11 +656,11 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-10">
                    <div className="space-y-4">
                       <label className="text-[10px] font-black text-slate-500 block uppercase tracking-widest">{t.loadWeight}</label>
-                      <input className="w-full bg-slate-50 dark:bg-slate-800 border dark:border-white/10 p-4 rounded-2xl text-sm font-black shadow-inner focus:border-blue-500 outline-none transition-all dark:text-white" type="number" value={formData.weight} onChange={e => handleValueChange('weight', parseFloat(e.target.value))} />
+                      <input className="w-full bg-slate-50 dark:bg-slate-800 border dark:border-white/10 p-4 rounded-2xl text-sm font-black shadow-inner focus:border-blue-500 outline-none transition-all dark:text-white" type="number" value={formData.weight ?? ''} onChange={e => { const val = parseFloat(e.target.value); handleValueChange('weight', isNaN(val) ? '' : val) }} />
                    </div>
                    <div className="space-y-4">
                       <label className="text-[10px] font-black text-slate-500 block uppercase tracking-widest">{t.hDist}</label>
-                      <input className="w-full bg-slate-50 dark:bg-slate-800 border dark:border-white/10 p-4 rounded-2xl text-sm font-black shadow-inner focus:border-blue-500 outline-none transition-all dark:text-white" type="number" value={formData.hDist} onChange={e => handleValueChange('hDist', parseFloat(e.target.value))} />
+                      <input className="w-full bg-slate-50 dark:bg-slate-800 border dark:border-white/10 p-4 rounded-2xl text-sm font-black shadow-inner focus:border-blue-500 outline-none transition-all dark:text-white" type="number" value={formData.hDist ?? ''} onChange={e => { const val = parseFloat(e.target.value); handleValueChange('hDist', isNaN(val) ? '' : val) }} />
                    </div>
                 </div>
               )}
@@ -849,7 +849,7 @@ export default function App() {
                     </label>
                     <input 
                       type="text" 
-                      value={aiConfig.ollamaUrl}
+                      value={aiConfig?.ollamaUrl ?? ''}
                       onChange={e => setAiConfig(prev => ({ ...prev, ollamaUrl: e.target.value }))}
                       className="w-full bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-mono"
                       dir="ltr"
@@ -862,7 +862,7 @@ export default function App() {
                     </label>
                     <input 
                       type="text" 
-                      value={aiConfig.ollamaModel}
+                      value={aiConfig?.ollamaModel ?? ''}
                       onChange={e => setAiConfig(prev => ({ ...prev, ollamaModel: e.target.value }))}
                       className="w-full bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-mono"
                       dir="ltr"
