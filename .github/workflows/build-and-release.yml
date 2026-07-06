@@ -1,0 +1,174 @@
+name: Build and Release (Windows & Android)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+permissions:
+  contents: write # Required to create/update releases and upload assets
+
+jobs:
+  # =========================================================
+  # JOB 1: Build & Package Windows Desktop App (Electron)
+  # =========================================================
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-size: 18
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Compile Web Assets
+        run: npm run build
+
+      - name: Decode Code Signing Certificate (PFX)
+        shell: bash
+        run: |
+          if [ ! -z "${{ secrets.WINDOWS_PFX_BASE64 }}" ]; then
+            echo "Decoding Windows Code Signing certificate..."
+            echo "${{ secrets.WINDOWS_PFX_BASE64 }}" | base64 --decode > cert.pfx
+            echo "CSC_LINK=cert.pfx" >> $GITHUB_ENV
+            echo "CSC_KEY_PASSWORD=${{ secrets.WINDOWS_PFX_PASSWORD }}" >> $GITHUB_ENV
+          else
+            echo "⚠️ WINDOWS_PFX_BASE64 secret is not set. The Windows Installer will NOT be digitally signed and will show SmartScreen warnings on first launch."
+          fi
+
+      - name: Build and Package Electron App
+        run: npm run electron:build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ergo-pro-ai-windows
+          path: dist-electron/*.exe
+
+  # =========================================================
+  # JOB 2: Build & Package Android Mobile App (Capacitor)
+  # =========================================================
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'zulu'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Compile Web Assets
+        run: npm run build
+
+      - name: Initialize Capacitor Android Project
+        run: |
+          # Add the Android platform folder if not already present
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          # Copy compiled web assets (dist/) into native Android project
+          npx cap sync
+
+      - name: Build Android Release APK
+        working-directory: android
+        run: ./gradlew assembleRelease
+
+      - name: Sign Android Release APK
+        if: "${{ env.ANDROID_SIGNING_READY == 'true' }}"
+        id: sign_app
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: android/app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        env:
+          # A simple helper variable to check if credentials are provided
+          ANDROID_SIGNING_READY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+
+      - name: Rename Signed App
+        if: "${{ env.ANDROID_SIGNING_READY == 'true' }}"
+        run: |
+          mv android/app/build/outputs/apk/release/app-release-signed.apk android/app/build/outputs/apk/release/ErgoPro-AI-signed.apk
+        env:
+          ANDROID_SIGNING_READY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+
+      - name: Use Unsigned APK if Key is Not Provided
+        if: "${{ env.ANDROID_SIGNING_READY == 'false' }}"
+        run: |
+          mv android/app/build/outputs/apk/release/app-release-unsigned.apk android/app/build/outputs/apk/release/ErgoPro-AI-unsigned.apk
+        env:
+          ANDROID_SIGNING_READY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+
+      - name: Upload Android Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ergo-pro-ai-android
+          path: android/app/build/outputs/apk/release/ErgoPro-AI-*.apk
+
+  # =========================================================
+  # JOB 3: Create GitHub Release & Upload Compiled Packages
+  # =========================================================
+  publish-release:
+    needs: [build-windows, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ergo-pro-ai-windows
+          path: release-assets/windows
+
+      - name: Download Android Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ergo-pro-ai-android
+          path: release-assets/android
+
+      - name: Extract Version Name
+        id: get_version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.get_version.outputs.VERSION }}-${{ github.run_number }}
+          name: Release v${{ steps.get_version.outputs.VERSION }} (Build #${{ github.run_number }})
+          draft: false
+          prerelease: false
+          files: |
+            release-assets/windows/*.exe
+            release-assets/android/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

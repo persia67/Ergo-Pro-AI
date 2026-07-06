@@ -1,12 +1,18 @@
 {
   "name": "ergopro-ai---advanced-ergonomic-assessment-suite",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "main": "electron-main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:dev": "vite build && electron .",
+    "electron:build": "vite build && electron-builder --windows",
+    "android:add": "cap add android",
+    "android:sync": "cap sync",
+    "android:build": "vite build && cap sync && cd android && ./gradlew assembleRelease"
   },
   "dependencies": {
     "@google/genai": "^1.41.0",
@@ -15,10 +21,42 @@
     "react-dom": "^19.2.4"
   },
   "devDependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^24.13.3",
     "typescript": "~5.8.2",
     "vite": "^6.2.0",
     "vite-plugin-pwa": "^1.2.0"
+  },
+  "build": {
+    "appId": "com.ergopro.ai",
+    "productName": "ErgoPro AI",
+    "copyright": "Copyright © 2026 ErgoPro AI",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "electron-main.cjs",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "dist/favicon.ico",
+      "publisherName": "ErgoPro AI Software Group"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ErgoPro AI Assessment"
+    }
   }
 }
